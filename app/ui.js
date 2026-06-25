@@ -90,6 +90,17 @@ const UI = {
     monitorDragOk: false,
     monitorStartX: 0,
     monitorStartY: 0,
+    keyboardControlsDragMargin: 8,
+    keyboardControlsDragging: false,
+    keyboardControlsDragMoved: false,
+    keyboardControlsDragPointerId: null,
+    keyboardControlsDragStartX: 0,
+    keyboardControlsDragStartY: 0,
+    keyboardControlsDragLastX: 0,
+    keyboardControlsDragLastY: 0,
+    keyboardControlsSuppressTap: false,
+    keyboardControlsDragInputType: null,
+    keyboardControlsIgnoreMouseUntil: 0,
 
     multiMonitorSupport: (typeof BroadcastChannel !== "undefined" && typeof SharedWorker !== "undefined"),
     get supportsMultiMonitor() {
@@ -431,20 +442,19 @@ const UI = {
 * ------v------*/
 
     addKeyboardControlsPanelHandlers() {
-        // panel dragging
-        interact(".keyboard-controls").draggable({
-            allowFrom: ".handle",
-            listeners: {
-                move: (e) => {
-                    const target = e.target;
-                    const x = (parseFloat(target.getAttribute("data-x")) || 0) + e.dx;
-                    const y = (parseFloat(target.getAttribute("data-y")) || 0) + e.dy;
-                    target.style.transform = `translate(${x}px, ${y}px)`;
-                    target.setAttribute("data-x", x);
-                    target.setAttribute("data-y", y);
-                },
-            },
-        });
+        const keyboardHandle = document.querySelector(".keyboard-controls .handle");
+        keyboardHandle.addEventListener("pointerdown", UI.startKeyboardControlsDrag);
+        keyboardHandle.addEventListener("mousedown", UI.startKeyboardControlsDrag);
+        keyboardHandle.addEventListener("touchstart", UI.startKeyboardControlsDrag, { passive: false });
+        window.addEventListener("pointermove", UI.dragKeyboardControls);
+        window.addEventListener("mousemove", UI.dragKeyboardControls);
+        window.addEventListener("touchmove", UI.dragKeyboardControls, { passive: false });
+        window.addEventListener("pointerup", UI.endKeyboardControlsDrag);
+        window.addEventListener("pointercancel", UI.endKeyboardControlsDrag);
+        window.addEventListener("mouseup", UI.endKeyboardControlsDrag);
+        window.addEventListener("touchend", UI.endKeyboardControlsDrag);
+        window.addEventListener("touchcancel", UI.endKeyboardControlsDrag);
+        window.addEventListener("resize", UI.keepKeyboardControlsInViewport);
 
         // panel expanding
         interact(".keyboard-controls .handle")
@@ -456,11 +466,16 @@ const UI = {
             buttonsEl.classList.toggle("was-open", isOpen);
             buttonsEl.classList.toggle("is-open", !isOpen);
 
-            setTimeout(() => buttonsEl.classList.remove("was-open"), 500);
+            setTimeout(() => {
+                buttonsEl.classList.remove("was-open");
+                UI.keepKeyboardControlsInViewport();
+            }, 500);
         });
 
         // keyboard showing
         interact(".keyboard-controls .handle").on("tap", (e) => {
+            if (UI.keyboardControlsSuppressTap) return;
+
             if (e.dt < 150) {
                 UI.toggleVirtualKeyboard();
             }
@@ -473,6 +488,162 @@ const UI = {
         interact(".keyboard-controls .button.tab").on("tap", UI.sendTab);
         interact(".keyboard-controls .button.escape").on("tap", UI.sendEsc);
         interact(".keyboard-controls .button.ctrlaltdel").on("tap", UI.sendCtrlAltDel);
+    },
+
+    getKeyboardControlsEventType(e) {
+        if (e.type.startsWith("touch")) return "touch";
+        if (e.type.startsWith("mouse")) return "mouse";
+        return "pointer";
+    },
+
+    getKeyboardControlsEventPoint(e, pointerId = null) {
+        const touchList = e.touches?.length ? e.touches : e.changedTouches;
+
+        if (touchList?.length) {
+            let touch = touchList[0];
+
+            if (pointerId !== null) {
+                for (let i = 0; i < touchList.length; i++) {
+                    if (touchList[i].identifier === pointerId) {
+                        touch = touchList[i];
+                        break;
+                    }
+                }
+            }
+
+            return {
+                x: touch.clientX,
+                y: touch.clientY,
+                id: touch.identifier,
+            };
+        }
+
+        return {
+            x: e.clientX,
+            y: e.clientY,
+            id: e.pointerId ?? "mouse",
+        };
+    },
+
+    startKeyboardControlsDrag(e) {
+        const inputType = UI.getKeyboardControlsEventType(e);
+
+        if (UI.keyboardControlsDragging) return;
+        if (inputType === "mouse" && Date.now() < UI.keyboardControlsIgnoreMouseUntil) return;
+        if (e.button !== undefined && e.button !== 0) return;
+
+        const target = document.getElementById("noVNC_keyboard_control");
+        if (!target) return;
+
+        const point = UI.getKeyboardControlsEventPoint(e);
+
+        UI.keyboardControlsDragging = true;
+        UI.keyboardControlsDragMoved = false;
+        UI.keyboardControlsDragPointerId = point.id;
+        UI.keyboardControlsDragInputType = inputType;
+        UI.keyboardControlsDragStartX = point.x;
+        UI.keyboardControlsDragStartY = point.y;
+        UI.keyboardControlsDragLastX = point.x;
+        UI.keyboardControlsDragLastY = point.y;
+
+        target.classList.add("is-dragging");
+
+        if (e.pointerId !== undefined && e.currentTarget.setPointerCapture) {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        }
+    },
+
+    dragKeyboardControls(e) {
+        if (!UI.keyboardControlsDragging) return;
+
+        const inputType = UI.getKeyboardControlsEventType(e);
+        if (inputType !== UI.keyboardControlsDragInputType) return;
+
+        const point = UI.getKeyboardControlsEventPoint(e, UI.keyboardControlsDragPointerId);
+
+        const dx = point.x - UI.keyboardControlsDragLastX;
+        const dy = point.y - UI.keyboardControlsDragLastY;
+
+        if (dx === 0 && dy === 0) return;
+
+        const totalX = point.x - UI.keyboardControlsDragStartX;
+        const totalY = point.y - UI.keyboardControlsDragStartY;
+        if (Math.abs(totalX) > dragThreshold || Math.abs(totalY) > dragThreshold) {
+            UI.keyboardControlsDragMoved = true;
+        }
+
+        const target = document.getElementById("noVNC_keyboard_control");
+        if (target) {
+            UI.moveKeyboardControls(target, dx, dy);
+        }
+
+        UI.keyboardControlsDragLastX = point.x;
+        UI.keyboardControlsDragLastY = point.y;
+        e.preventDefault();
+    },
+
+    endKeyboardControlsDrag(e) {
+        if (!UI.keyboardControlsDragging) return;
+
+        const inputType = UI.getKeyboardControlsEventType(e);
+        if (inputType !== UI.keyboardControlsDragInputType) return;
+
+        const target = document.getElementById("noVNC_keyboard_control");
+        if (target) {
+            target.classList.remove("is-dragging");
+        }
+
+        if (UI.keyboardControlsDragMoved) {
+            UI.keyboardControlsSuppressTap = true;
+            setTimeout(() => {
+                UI.keyboardControlsSuppressTap = false;
+            }, 250);
+        }
+
+        UI.keyboardControlsDragging = false;
+        UI.keyboardControlsDragMoved = false;
+        UI.keyboardControlsDragPointerId = null;
+        UI.keyboardControlsDragInputType = null;
+        if (inputType === "touch") {
+            UI.keyboardControlsIgnoreMouseUntil = Date.now() + 500;
+        }
+        UI.keepKeyboardControlsInViewport();
+    },
+
+    moveKeyboardControls(target, dx, dy) {
+        const margin = UI.keyboardControlsDragMargin;
+        const rect = target.getBoundingClientRect();
+        let x = (parseFloat(target.getAttribute("data-x")) || 0) + dx;
+        let y = (parseFloat(target.getAttribute("data-y")) || 0) + dy;
+
+        const left = rect.left + dx;
+        const right = rect.right + dx;
+        const top = rect.top + dy;
+        const bottom = rect.bottom + dy;
+
+        if (left < margin) {
+            x += margin - left;
+        } else if (right > window.innerWidth - margin) {
+            x -= right - (window.innerWidth - margin);
+        }
+
+        if (top < margin) {
+            y += margin - top;
+        } else if (bottom > window.innerHeight - margin) {
+            y -= bottom - (window.innerHeight - margin);
+        }
+
+        target.style.transform = `translate(${x}px, ${y}px)`;
+        target.setAttribute("data-x", x);
+        target.setAttribute("data-y", y);
+    },
+
+    keepKeyboardControlsInViewport() {
+        const target = document.getElementById("noVNC_keyboard_control");
+
+        if (!target || !target.classList.contains("is-visible")) return;
+
+        UI.moveKeyboardControls(target, 0, 0);
     },
 
     addControlbarHandlers() {
@@ -724,7 +895,6 @@ const UI = {
             UI.addClickHandle('noVNC_identify_monitors_button', UI._identify);
             UI.addClickHandle('noVNC_addMonitor', UI.addSecondaryMonitor);
             UI.addClickHandle('noVNC_refreshMonitors', UI.displaysRefresh);
-
         }
     },
 
@@ -1834,6 +2004,11 @@ const UI = {
         }
 
         UI.updateVisualState('connecting');
+        if (UI.supportsMultiMonitor) {
+            UI.showControlInput('noVNC_displays_button')
+        } else {
+            UI.hideControlInput('noVNC_displays_button')
+        }
 
         let url;
 
@@ -1847,7 +2022,6 @@ const UI = {
 
         UI.monitors = [];
         UI.sortedMonitors = [];
-        UI.showControlInput('noVNC_displays_button')
         UI.rfb = new RFB(document.getElementById('noVNC_container'),
                         document.getElementById('noVNC_keyboardinput'),
                         url,
@@ -3161,6 +3335,7 @@ const UI = {
 
     showKeyboardControls() {
         document.getElementById('noVNC_keyboard_control').classList.add("is-visible");
+        requestAnimationFrame(UI.keepKeyboardControlsInViewport);
     },
 
     hideKeyboardControls() {
