@@ -1,0 +1,57 @@
+name: Build dist
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-package-lock
+
+      - name: Build dist
+        run: npm run build
+
+      - name: Package dist artifact
+        run: zip -qr dist.zip dist
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist.zip
+          retention-days: 30
+
+      - name: Package versioned release dist
+        id: release_package
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="dist_v${version}.zip"
+          cp dist.zip "${archive}"
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=dist_v${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.release_package.outputs.release_name }}
+          files: ${{ steps.release_package.outputs.archive }}
+          fail_on_unmatched_files: true
