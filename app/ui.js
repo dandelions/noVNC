@@ -2616,6 +2616,10 @@ const UI = {
         const controls = document.getElementById('noVNC_custom_resolution_controls');
 
         document.documentElement.classList.toggle('noVNC_custom_resolution', !!enabled);
+        if (!controls) {
+            Log.Warn('Custom resolution controls are not available in this page');
+            return;
+        }
         controls.classList.toggle('noVNC_hidden', !enabled);
 
         if (enabled) {
