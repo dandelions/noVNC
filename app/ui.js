@@ -49,7 +49,7 @@ import {
     UI_FPS_CHART, FPS
 } from './constants.js';
 import {encodings} from "../core/encodings.js";
-import CodecDetector, {CODEC_VARIANT_NAMES, preferredCodecs} from "../core/codecs";
+import CodecDetector, {CODEC_VARIANT_NAMES} from "../core/codecs";
 import { perfLogger } from '../core/util/performance-logger.js';
 
 // Enable performance logging
@@ -107,7 +107,7 @@ const UI = {
         return this.multiMonitorSupport;
     },
     codecDetector: null,
-    forcedCodecs: [],
+    hasLocalStreamModePreference: false,
 
     prime: async () => {
         await WebUtil.initSettings();
@@ -319,6 +319,9 @@ const UI = {
         UI.initSetting('video_scaling', 2);
         UI.initSetting('max_video_resolution_x', 960);
         UI.initSetting('max_video_resolution_y', 540);
+        UI.initSetting('custom_resolution', false);
+        UI.initSetting('forced_resolution_x', 1920);
+        UI.initSetting('forced_resolution_y', 1080);
         UI.initSetting('framerate', FPS.MIN);
         UI.initSetting('framerate_image_mode', FPS.MIN);
         UI.initSetting('framerate_streaming_mode', FPS.MIN);
@@ -341,7 +344,15 @@ const UI = {
         UI.initSetting('enable_hidpi', false);
         UI.initSetting('fallback_image_mode', false);
 
-        UI.initSetting(UI_SETTINGS.STREAM_MODE, encodings.pseudoEncodingStreamingModeJpegWebp);
+        const savedStreamMode = WebUtil.readSetting(UI_SETTINGS.STREAM_MODE);
+        UI.hasLocalStreamModePreference = savedStreamMode !== null;
+        WebUtil.setSetting(
+            UI_SETTINGS.STREAM_MODE,
+            UI.hasLocalStreamModePreference
+                ? savedStreamMode
+                : encodings.pseudoEncodingStreamingModeJpegWebp
+        );
+        UI.updateSetting(UI_SETTINGS.STREAM_MODE);
         // UI.initSetting(UI_SETTINGS.HW_PROFILE, UI_SETTING_PROFILE_OPTIONS.BASELINE);
         UI.initSetting(UI_SETTINGS.GOP, this.getSetting('framerate'));
         UI.initSetting(UI_SETTINGS.VIDEO_STREAM_QUALITY, 43);
@@ -382,19 +393,8 @@ const UI = {
 
         UI.setupSettingLabels();
         UI.updateQuality();
+        UI.updateCustomResolutionControls();
 
-        // VDI setting
-        let val = WebUtil.getConfigVar('kasmvnc_mode_preference');
-        if (val === 'image') {
-            UI.forcedCodecs = [encodings.pseudoEncodingStreamingModeJpegWebp];
-            Log.Debug('VDI setting: image');
-            return;
-        }
-
-        if (val != null) {
-            UI.forcedCodecs = val.split('|').map(Number);
-            Log.Debug('VDI setting: ' + UI.forcedCodecs);
-        }
     },
     initMouseButtonMapper() {
         const mouseButtonMapper = new MouseButtonMapper();
@@ -827,6 +827,9 @@ const UI = {
         UI.addSettingChangeHandler('max_video_resolution_x', UI.updateQuality);
         UI.addSettingChangeHandler('max_video_resolution_y');
         UI.addSettingChangeHandler('max_video_resolution_y', UI.updateQuality);
+        UI.addSettingChangeHandler('custom_resolution', UI.toggleCustomResolution);
+        UI.addSettingChangeHandler('forced_resolution_x', UI.applyCustomResolution);
+        UI.addSettingChangeHandler('forced_resolution_y', UI.applyCustomResolution);
         UI.addSettingChangeHandler('framerate_image_mode', () => {
             const value = UI.getSettingElement('framerate_image_mode').value;
             UI.getSettingElement('framerate_streaming_mode').value = value;
@@ -1076,6 +1079,7 @@ const UI = {
     streamMode(event) {
         const value = Number(event.target.value);
         UI.saveSetting(UI_SETTINGS.STREAM_MODE);
+        UI.hasLocalStreamModePreference = true;
         UI.applyStreamMode(value, event.configuration);
     },
 
@@ -1182,11 +1186,6 @@ const UI = {
         if (!Array.isArray(codecs) || codecs.length === 0)
             return result;
 
-        const forcedCodecs = UI.forcedCodecs;
-        codecs = forcedCodecs.length > 0
-            ? forcedCodecs.filter(id => codecs.includes(id))
-            : codecs;
-
         const codecTuples = codecs.map((id) => {
             const label = CODEC_VARIANT_NAMES[id] ? CODEC_VARIANT_NAMES[id] : `Codec ${id}`;
             return {id, label};
@@ -1198,12 +1197,6 @@ const UI = {
     },
 
     getBestStreamingMode(availableModes, fallbackOption, previousValue) {
-        let result = fallbackOption.id;
-        if (UI.forcedCodecs.length > 0) {
-            const forcedMode = UI.forcedCodecs.find(id => availableModes.some(option => option.id === id));
-            return forcedMode !== undefined ? forcedMode : fallbackOption.id;
-        }
-
         // If we had a bad encoding event, force image mode
         if (UI.getSetting('fallback_image_mode')) {
             UI.forceSetting('fallback_image_mode', false, false);
@@ -1211,20 +1204,29 @@ const UI = {
             return encodings.pseudoEncodingStreamingModeJpegWebp;
         }
 
-        // Restore selection if possible; otherwise default to JPEG/WEBP
+        // Restore the local selection if possible. On first use, desktop
+        // clients default to JPEG/WEBP while mobile clients prefer H.264.
         const hasPrevious = availableModes.some(option => option.id === previousValue);
-
-        const availableIds = availableModes.map(option => option.id);
-        const preferredMatch = preferredCodecs.filter(c => availableIds.includes(c));
-        result = hasPrevious ? previousValue : encodings.pseudoEncodingStreamingModeJpegWebp;
-
-        if (preferredMatch.length > 0) {
-            if (result === encodings.pseudoEncodingStreamingModeJpegWebp) {
-                result = Math.min(...preferredMatch);
-            }
+        if (UI.hasLocalStreamModePreference && hasPrevious) {
+            return previousValue;
         }
 
-        return result;
+        const isMobileClient = isIOS() || /Android|Mobile/i.test(navigator.userAgent);
+        if (!isMobileClient) {
+            return fallbackOption.id;
+        }
+
+        const h264Modes = [
+            encodings.pseudoEncodingStreamingModeAVCQSV,
+            encodings.pseudoEncodingStreamingModeAVCNVENC,
+            encodings.pseudoEncodingStreamingModeAVCVAAPI,
+            encodings.pseudoEncodingStreamingModeAVCSW,
+            encodings.pseudoEncodingStreamingModeAVC
+        ];
+        const mobileH264Mode = h264Modes.find(id =>
+            availableModes.some(option => option.id === id));
+
+        return mobileH264Mode !== undefined ? mobileH264Mode : fallbackOption.id;
     },
 
     showStatus(text, statusType, time, kasm = false) {
@@ -1724,6 +1726,10 @@ const UI = {
         UI.updateSetting('video_scaling', 2);
         UI.updateSetting('max_video_resolution_x', 960);
         UI.updateSetting('max_video_resolution_y', 540);
+        UI.updateSetting('custom_resolution');
+        UI.updateSetting('forced_resolution_x');
+        UI.updateSetting('forced_resolution_y');
+        UI.updateCustomResolutionControls();
         UI.updateSetting('framerate', FPS.MIN);
         UI.updateSetting('compression');
         UI.updateSetting('shared');
@@ -2066,6 +2072,14 @@ const UI = {
         UI.rfb.clipViewport = UI.getSetting('view_clip');
         UI.rfb.scaleViewport = UI.getSetting('resize') === 'scale';
         UI.rfb.resizeSession = UI.getSetting('resize') === 'remote';
+        if (UI.getSetting('custom_resolution')) {
+            const { width, height } = UI.getCustomResolutionValues();
+            UI.rfb.clipViewport = false;
+            UI.rfb.scaleViewport = false;
+            UI.rfb.resizeSession = false;
+            UI.rfb.forcedResolutionX = width;
+            UI.rfb.forcedResolutionY = height;
+        }
 
         UI.setConnectionQualityValues();
 
@@ -2409,11 +2423,13 @@ const UI = {
                     break;
                 case 'set_resolution':
                     if (UI.rfb) {
-                        UI.rfb.forcedResolutionX = event.data.value_x;
-                        UI.rfb.forcedResolutionY = event.data.value_y;
+                        if (!UI.getSetting('custom_resolution')) {
+                            UI.forceSetting('custom_resolution', true, false);
+                            UI.toggleCustomResolution();
+                        }
                         UI.forceSetting('forced_resolution_x', event.data.value_x, false);
                         UI.forceSetting('forced_resolution_y', event.data.value_y, false);
-                        UI.applyResizeMode();
+                        UI.applyCustomResolution();
                     }
                     break;
                 case 'set_perf_stats':
@@ -2445,26 +2461,7 @@ const UI = {
                     }
                     break;
                 case 'set_streaming_mode':
-                    let mode = encodings.pseudoEncodingStreamingModeJpegWebp;
-                    if (event.data.value !== 'image') {
-                        mode = parseInt(event.data.value);
-                    }
-
-                    UI.forceSetting(UI_SETTINGS.STREAM_MODE, mode, false);
-                    if (mode !== encodings.pseudoEncodingStreamingModeJpegWebp) {
-                        const imageQuality = parseInt(UI.getSetting('video_quality'));
-                        const presets = UI.rfb?.videoCodecConfigurations?.[mode]?.presets;
-                        if (Array.isArray(presets) && presets.length > 0) {
-                            const index = Number.isFinite(imageQuality)
-                                ? Math.max(0, Math.min(presets.length - 1, imageQuality))
-                                : 0;
-                            const streamQuality = presets[index];
-                            if (streamQuality !== undefined) {
-                                UI.forceSetting(UI_SETTINGS.VIDEO_STREAM_QUALITY, streamQuality, false);
-                            }
-                        }
-                    }
-                    UI.applyStreamMode(mode);
+                    Log.Debug('Ignoring server streaming mode; using local preference');
                     break;
                 case 'set_gop':
                     UI.forceSetting(UI_SETTINGS.GOP, parseInt(event.data.value), false);
@@ -2570,6 +2567,7 @@ const UI = {
     applyResizeMode() {
         if (!UI.rfb) return;
         const resize_setting = UI.getSetting('resize');
+        const customResolution = UI.getSetting('custom_resolution');
         UI.rfb.clipViewport = resize_setting !== 'off';
         UI.rfb.scaleViewport = resize_setting === 'scale';
         UI.rfb.resizeSession = resize_setting === 'remote';
@@ -2579,15 +2577,86 @@ const UI = {
         UI.rfb.enableHiDpi = UI.getSetting('enable_hidpi');
         UI.rfb.threading = UI.getSetting('enable_threading');
 
-        if (UI.rfb.resizeSession) {
+        if (customResolution) {
+            const { width, height } = UI.getCustomResolutionValues();
+            UI.rfb.forcedResolutionX = width;
+            UI.rfb.forcedResolutionY = height;
+            UI.rfb.clipViewport = false;
+            UI.rfb.scaleViewport = false;
+            UI.rfb.resizeSession = false;
+        } else {
             UI.rfb.forcedResolutionX = null;
             UI.rfb.forcedResolutionY = null;
-        } else {
-            UI.rfb.forcedResolutionX = UI.getSetting('forced_resolution_x', false);
-            UI.rfb.forcedResolutionY = UI.getSetting('forced_resolution_y', false);
         }
 
         UI.rfb.updateConnectionSettings();
+    },
+
+    getCustomResolutionValues() {
+        const widthElem = UI.getSettingElement('forced_resolution_x');
+        const heightElem = UI.getSettingElement('forced_resolution_y');
+        const width = Math.max(100, Math.min(3840, parseInt(widthElem.value, 10) || 1920));
+        const height = Math.max(100, Math.min(2160, parseInt(heightElem.value, 10) || 1080));
+
+        if (String(widthElem.value) !== String(width)) {
+            widthElem.value = width;
+        }
+        if (String(heightElem.value) !== String(height)) {
+            heightElem.value = height;
+        }
+
+        WebUtil.writeSetting('forced_resolution_x', width);
+        WebUtil.writeSetting('forced_resolution_y', height);
+
+        return { width, height };
+    },
+
+    updateCustomResolutionControls() {
+        const enabled = UI.getSetting('custom_resolution');
+        const controls = document.getElementById('noVNC_custom_resolution_controls');
+
+        document.documentElement.classList.toggle('noVNC_custom_resolution', !!enabled);
+        controls.classList.toggle('noVNC_hidden', !enabled);
+
+        if (enabled) {
+            UI.disableSetting('resize');
+            UI.disableSetting('view_clip');
+        } else {
+            UI.enableSetting('resize');
+            UI.enableSetting('view_clip');
+        }
+    },
+
+    toggleCustomResolution() {
+        UI.saveSetting('custom_resolution');
+        const enabled = UI.getSetting('custom_resolution');
+
+        if (enabled) {
+            WebUtil.writeSetting('custom_resolution_previous_resize', UI.getSetting('resize'));
+            WebUtil.writeSetting('custom_resolution_previous_view_clip', UI.getSetting('view_clip'));
+            UI.forceSetting('resize', 'off', true);
+            UI.forceSetting('view_clip', false, true);
+        } else {
+            const previousResize = WebUtil.readSetting('custom_resolution_previous_resize', 'remote');
+            const previousViewClip = WebUtil.readSetting('custom_resolution_previous_view_clip', false);
+            UI.forceSetting('resize', previousResize, false);
+            UI.forceSetting('view_clip', previousViewClip, false);
+        }
+
+        UI.updateCustomResolutionControls();
+        UI.applyResizeMode();
+        UI.updateViewClip();
+    },
+
+    applyCustomResolution() {
+        UI.saveSetting('forced_resolution_x');
+        UI.saveSetting('forced_resolution_y');
+
+        if (!UI.getSetting('custom_resolution')) return;
+
+        UI.getCustomResolutionValues();
+        UI.applyResizeMode();
+        UI.updateViewClip();
     },
 
 /* ------^-------
@@ -3009,6 +3078,13 @@ const UI = {
     // for when the viewport is scaled or when a touch device is used.
     updateViewClip() {
         if (!UI.rfb) return;
+
+        if (UI.getSetting('custom_resolution')) {
+            UI.forceSetting('view_clip', false);
+            UI.rfb.clipViewport = false;
+            UI.updateViewDrag();
+            return;
+        }
 
         const scaling = UI.getSetting('resize') === 'scale';
 
