@@ -168,14 +168,16 @@
     <script>
         function fullscreenchanged(event) {
             if (document.fullscreenElement) {
-                if ('keyboard' in navigator) {
-                    navigator.keyboard.lock(["Escape"]);
+                if (typeof navigator.keyboard?.lock === 'function') {
+                    navigator.keyboard.lock(["Escape"]).catch(function (err) {
+                        console.warn("Unable to lock the Escape key: " + err);
+                    });
                 }
                 document.getElementById('fullscreenBg').classList.remove('bg-gray-500')
                 document.getElementById('fullscreenBg').classList.add('bg-emerald-500')
             } else {
-                if ('keyboard' in navigator) {
-                    navigator.keyboard.unlock(["Escape"]);
+                if (typeof navigator.keyboard?.unlock === 'function') {
+                    navigator.keyboard.unlock();
                 }
                 document.getElementById('fullscreenBg').classList.remove('bg-emerald-500')
                 document.getElementById('fullscreenBg').classList.add('bg-gray-500')

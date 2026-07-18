@@ -2511,9 +2511,6 @@ const UI = {
             document.mozFullScreenElement || // currently working methods
             document.webkitFullscreenElement ||
             document.msFullscreenElement) {
-            if (supportsKeyboardLock) {
-                navigator.keyboard.unlock();
-            }
             if (document.exitFullscreen) {
                 document.exitFullscreen();
             } else if (document.mozCancelFullScreen) {
@@ -2533,14 +2530,31 @@ const UI = {
             } else if (document.body.msRequestFullscreen) {
                 document.body.msRequestFullscreen();
             }
-            // No need to explicitly ask for permission,
-            // but it's expected that user grant it since Chromium 131.
-            // See https://developer.chrome.com/blog/keyboard-lock-pointer-lock-permission
-            if (supportsKeyboardLock) {
-                navigator.keyboard.lock();
-            }
         }
         UI.updateFullscreenButton();
+    },
+
+    updateKeyboardLock() {
+        if (!supportsKeyboardLock) return;
+
+        const fullscreen = document.fullscreenElement ||
+            document.mozFullScreenElement ||
+            document.webkitFullscreenElement ||
+            document.msFullscreenElement;
+        const pointerLocked = UI.rfb?.pointerLock === true;
+
+        if (!fullscreen && !pointerLocked) {
+            navigator.keyboard.unlock();
+            return;
+        }
+
+        // Escape is normally consumed by fullscreen and pointer lock. Ask the
+        // browser to deliver it to noVNC so it can be forwarded to the server.
+        // This must run after the browser has entered either mode; requesting
+        // it alongside requestFullscreen() races the fullscreen transition.
+        navigator.keyboard.lock(["Escape"]).catch((err) => {
+            Log.Warn("Unable to lock the Escape key: " + err);
+        });
     },
 
     updateFullscreenButton() {
@@ -2554,6 +2568,7 @@ const UI = {
             document.getElementById('noVNC_fullscreen_button')
                 .classList.remove("noVNC_selected");
         }
+        UI.updateKeyboardLock();
         UI.updatePointerLockButton();
     },
 
@@ -3687,7 +3702,7 @@ const UI = {
             pointer_lock_el.checked = true;
             UI.sendMessage('enable_pointer_lock', true);
             UI.closeControlbar();
-            UI.showStatus('Press Esc Key to Exit Pointer Lock Mode', 'warn', 5000, true);
+            UI.showStatus('Esc is sent to the remote session. Use Ctrl+Shift+3 to exit Pointer Lock Mode.', 'warn', 5000, true);
         } else {
             //If in game mode
             if (UI.rfb.pointerRelative) {
@@ -3699,6 +3714,7 @@ const UI = {
                 UI.sendMessage('enable_pointer_lock', false);
             }
         }
+        UI.updateKeyboardLock();
     },
 
     onGameModeForced() {

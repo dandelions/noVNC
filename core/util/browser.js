@@ -27,7 +27,9 @@ window.addEventListener('touchstart', function onFirstTouch() {
 // brings us a bit closer but is not optimal.
 export let dragThreshold = 10 * (window.devicePixelRatio || 1);
 
-export const supportsKeyboardLock = typeof navigator.keyboard?.lock === 'function';
+export const supportsKeyboardLock =
+    typeof navigator.keyboard?.lock === 'function' &&
+    typeof navigator.keyboard?.unlock === 'function';
 
 let _supportsCursorURIs = false;
 
@@ -176,4 +178,3 @@ export function supportsPointerLock() {
     if (isIOS() || isIE()) { return false; }
     return (document.exitPointerLock);
 }
-
