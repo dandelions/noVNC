@@ -450,6 +450,44 @@ describe('Key Event Handling', function () {
         });
     });
 
+    describe('IME composition', function () {
+        function createKeyboard() {
+            const touchInput = { value: '' };
+            const kbd = new Keyboard(document, touchInput);
+            kbd._scheduleRfbKeySend = () => {};
+            return { kbd, touchInput };
+        }
+
+        it('should send every character from the first composition update', function () {
+            const { kbd } = createKeyboard();
+
+            kbd._handleCompositionStart({data: ''});
+            kbd._handleCompositionUpdate({data: '中国'});
+
+            expect(kbd._rfbKeyQueue.map((event) => [event.keysym, event.down])).to.deep.equal([
+                [0x01004e2d, true], [0x01004e2d, false],
+                [0x010056fd, true], [0x010056fd, false],
+            ]);
+        });
+
+        it('should replace the changed part of a composition', function () {
+            const { kbd } = createKeyboard();
+
+            kbd._handleCompositionStart({data: ''});
+            kbd._handleCompositionUpdate({data: '中'});
+            kbd._handleCompositionUpdate({data: '中国'});
+            kbd._handleCompositionUpdate({data: '中文'});
+
+            const events = kbd._rfbKeyQueue.map((event) => [event.keysym, event.down]);
+            expect(events).to.deep.equal([
+                [0x01004e2d, true], [0x01004e2d, false],
+                [0x010056fd, true], [0x010056fd, false],
+                [0xff08, true], [0xff08, false],
+                [0x01006587, true], [0x01006587, false],
+            ]);
+        });
+    });
+
     describe('Missing Shift keyup on Windows', function () {
         let origNavigator;
         beforeEach(function () {

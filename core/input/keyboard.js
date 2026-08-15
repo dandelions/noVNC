@@ -195,60 +195,58 @@ export default class Keyboard {
         this._lastKeyboardInput = "";
     }
 
+    _sendText(text) {
+        for (const char of text || '') {
+            const keysym = keysyms.lookup(char.codePointAt(0));
+            this._sendKeyStroke(keysym, 'Unidentified');
+        }
+    }
+
     _handleCompositionUpdate(e) {
         Log.Debug("Composition update: " + e.data);
         const oldValue = this._lastKeyboardInput;
-        const newValue = e.data;
+        const newValue = e.data || '';
+        const oldChars = Array.from(oldValue);
+        const newChars = Array.from(newValue);
         let diffStart = 0;
 
-        if (this._imeStarted) {
-            this._sendKeyStroke(keysyms.lookup(newValue.charCodeAt(0)), 'Unidentified');
-            this._imeStarted = false;
-        } else {
-            //find position where difference starts
-            for (let i = 0; i < Math.min(oldValue.length, newValue.length); i++) {
-                if (newValue.charAt(i) !== oldValue.charAt(i)) {
-                    break;
-                }
-                diffStart++;
-            }
-
-            //send backspaces if needed
-            Log.Debug("Backspace diffStart: " + diffStart);
-            Log.Debug("Old value: " + oldValue + " Old value length: " + oldValue.length + " New value: " + newValue);
-            for (let bs = oldValue.length - diffStart; bs > 0; bs--) {
-                this._sendKeyStroke(KeyTable.XK_BackSpace, "Backspace");
-            }
-
-            //send new keys
-            for (let i = diffStart; i < newValue.length; i++) {
-                this._sendKeyStroke(keysyms.lookup(newValue.charCodeAt(i)), 'Unidentified');
-            }
+        // Find the common prefix of the previous and current composition.
+        while (diffStart < oldChars.length &&
+               diffStart < newChars.length &&
+               oldChars[diffStart] === newChars[diffStart]) {
+            diffStart++;
         }
+
+        // Replace the part of the old composition that changed.
+        Log.Debug("Backspace diffStart: " + diffStart);
+        Log.Debug("Old value: " + oldValue + " Old value length: " + oldChars.length + " New value: " + newValue);
+        for (let bs = oldChars.length - diffStart; bs > 0; bs--) {
+            this._sendKeyStroke(KeyTable.XK_BackSpace, "Backspace");
+        }
+
+        // Send every newly added code point, including all characters in the
+        // first composition update. The old implementation sent only index 0.
+        this._sendText(newChars.slice(diffStart).join(''));
+
         this._lastKeyboardInput = newValue;
-        //this._touchInput.focus();
+        this._imeStarted = false;
     }
 
     _handleCompositionEnd(e) {
         Log.Debug("Composition ended: " + e.data);
         this._touchInput.value = '';
+        this._lastKeyboardInput = '';
+        this._imeStarted = false;
     }
 
     _handleInput(e) {
-        //input event occurs only when keyup keydown events don't prevent default
-        //IME events will make this happen, for example
-        //IME changes can back out old characters and replace, thus send differential if IME
-        //otherwise send new characters
+        // input events carry committed text after an IME composition ends.
         Log.Debug("Current buffer: " + this._touchInput.value + " Input: " + e.data + " isComposing: " + e.isComposing + " input.type: " + e.inputType);
         if (!e.isComposing && e.inputType !== "insertCompositionText") {
             Log.Debug("Non-IME input change, sending new characters");
-            const newValue = e.data;
-
-            for (let i = 0; i < newValue?.length; i++) {
-                this._sendKeyStroke(keysyms.lookup(newValue.charCodeAt(i)), 'Unidentified');
-            }
-
+            this._sendText(e.data);
             this._touchInput.value = '';
+            this._lastKeyboardInput = '';
         }
     }
 
