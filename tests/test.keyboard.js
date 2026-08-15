@@ -486,6 +486,40 @@ describe('Key Event Handling', function () {
                 [0x01006587, true], [0x01006587, false],
             ]);
         });
+
+        it('should not resend text already sent during composition', function () {
+            const { kbd } = createKeyboard();
+
+            kbd._handleCompositionStart({data: ''});
+            kbd._handleCompositionUpdate({data: '中国'});
+            kbd._handleCompositionEnd({data: '中国'});
+            kbd._handleInput({data: '中国', isComposing: false, inputType: 'insertText'});
+
+            const keyDowns = kbd._rfbKeyQueue
+                .filter((event) => event.down)
+                .map((event) => event.keysym);
+            expect(keyDowns).to.deep.equal([0x01004e2d, 0x010056fd]);
+        });
+
+        it('should replace preedit text with the complete committed phrase', function () {
+            const { kbd } = createKeyboard();
+            const committedText = '中华人民共和国万岁';
+
+            kbd._handleCompositionStart({data: ''});
+            kbd._handleCompositionUpdate({data: 'zhonghua'});
+            kbd._handleCompositionEnd({data: committedText});
+            kbd._handleInput({data: committedText, isComposing: false, inputType: 'insertText'});
+
+            const keyDowns = kbd._rfbKeyQueue
+                .filter((event) => event.down)
+                .map((event) => event.keysym);
+            expect(keyDowns).to.deep.equal([
+                0x7a, 0x68, 0x6f, 0x6e, 0x67, 0x68, 0x75, 0x61,
+                0xff08, 0xff08, 0xff08, 0xff08, 0xff08, 0xff08, 0xff08, 0xff08,
+                0x01004e2d, 0x0100534e, 0x01004eba, 0x01006c11,
+                0x01005171, 0x0100548c, 0x010056fd, 0x01004e07, 0x01005c81,
+            ]);
+        });
     });
 
     describe('Missing Shift keyup on Windows', function () {

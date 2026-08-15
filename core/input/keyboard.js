@@ -56,6 +56,9 @@ export default class Keyboard {
 
         this._enableIME = false;
         this._imeStarted = false;
+        this._compositionInputPending = false;
+        this._compositionEndText = '';
+        this._compositionEndTimer = null;
         this._lastKeyboardInput = null;
         this._keyboardInputReset();
         this._translateShortcuts = true;
@@ -192,6 +195,8 @@ export default class Keyboard {
     _handleCompositionStart(e) {
         Log.Debug("Composition started: " + e.data);
         this._imeStarted = true;
+        this._compositionInputPending = false;
+        clearTimeout(this._compositionEndTimer);
         this._lastKeyboardInput = "";
     }
 
@@ -202,52 +207,73 @@ export default class Keyboard {
         }
     }
 
-    _handleCompositionUpdate(e) {
-        Log.Debug("Composition update: " + e.data);
+    _replaceCompositionText(text) {
         const oldValue = this._lastKeyboardInput;
-        const newValue = e.data || '';
+        const newValue = text || '';
         const oldChars = Array.from(oldValue);
         const newChars = Array.from(newValue);
         let diffStart = 0;
 
-        // Find the common prefix of the previous and current composition.
         while (diffStart < oldChars.length &&
                diffStart < newChars.length &&
                oldChars[diffStart] === newChars[diffStart]) {
             diffStart++;
         }
 
-        // Replace the part of the old composition that changed.
-        Log.Debug("Backspace diffStart: " + diffStart);
-        Log.Debug("Old value: " + oldValue + " Old value length: " + oldChars.length + " New value: " + newValue);
         for (let bs = oldChars.length - diffStart; bs > 0; bs--) {
             this._sendKeyStroke(KeyTable.XK_BackSpace, "Backspace");
         }
-
-        // Send every newly added code point, including all characters in the
-        // first composition update. The old implementation sent only index 0.
         this._sendText(newChars.slice(diffStart).join(''));
-
         this._lastKeyboardInput = newValue;
+    }
+
+    _finishComposition(text) {
+        this._replaceCompositionText(text);
+        this._touchInput.value = '';
+        this._lastKeyboardInput = '';
+        this._compositionInputPending = false;
+        this._imeStarted = false;
+        this._compositionEndTimer = null;
+    }
+
+    _handleCompositionUpdate(e) {
+        Log.Debug("Composition update: " + e.data);
+        this._replaceCompositionText(e.data);
         this._imeStarted = false;
     }
 
     _handleCompositionEnd(e) {
         Log.Debug("Composition ended: " + e.data);
-        this._touchInput.value = '';
-        this._lastKeyboardInput = '';
+        this._compositionEndText = e.data || '';
+        this._compositionInputPending = true;
         this._imeStarted = false;
+        clearTimeout(this._compositionEndTimer);
+
+        // Chrome and Firefox normally emit an input event after compositionend.
+        // Finalize here only when a browser omits that event.
+        this._compositionEndTimer = setTimeout(() => {
+            if (this._compositionInputPending) {
+                this._finishComposition(this._compositionEndText);
+            }
+        }, 0);
     }
 
     _handleInput(e) {
-        // input events carry committed text after an IME composition ends.
         Log.Debug("Current buffer: " + this._touchInput.value + " Input: " + e.data + " isComposing: " + e.isComposing + " input.type: " + e.inputType);
-        if (!e.isComposing && e.inputType !== "insertCompositionText") {
-            Log.Debug("Non-IME input change, sending new characters");
-            this._sendText(e.data);
-            this._touchInput.value = '';
-            this._lastKeyboardInput = '';
+        if (e.isComposing || e.inputType === "insertCompositionText") {
+            return;
         }
+
+        if (this._compositionInputPending) {
+            clearTimeout(this._compositionEndTimer);
+            this._finishComposition(e.data || this._compositionEndText);
+            return;
+        }
+
+        Log.Debug("Non-IME input change, sending new characters");
+        this._sendText(e.data);
+        this._touchInput.value = '';
+        this._lastKeyboardInput = '';
     }
 
     _keyboardInputReset() {
